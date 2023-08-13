@@ -1,0 +1,173 @@
+#include <Arduino.h>
+#include "driver/ledc.h"
+
+// Estructura para representar un botón
+struct Button
+{
+  const uint8_t PIN;  // Pin asociado al botón
+  volatile uint32_t numberKeyPresses;  // Contador de veces que se ha presionado el botón
+  volatile bool pressed;  // Indica si el botón ha sido presionado
+};
+
+Button btnSelect = {32, 0, false};  // Botón para seleccionar color
+Button btnAdjust = {35, 0, false};  // Botón para ajustar brillo
+
+// Definiciones para el control de los LEDs
+#define pwmChannel 0
+#define ledRChannel 1
+#define ledGChannel 2
+#define ledBChannel 3
+#define freqPWM 5000
+#define resolution 8
+#define pinLedR 5
+#define pinLedG 18
+#define pinLedB 19
+
+// Definiciones para el control del servomotor
+#define servoPin 2  // El pin del servo (cambiar al pin que estés utilizando)
+#define servoChannel 4
+#define servoFrequency 50  // Frecuencia para el servomotor en Hz
+#define resolution2 10
+
+int currentColor = ledRChannel;  // Color actual seleccionado
+int brightness = 255;  // Brillo de los LEDs (mantiene los LEDs siempre encendidos)
+
+portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
+
+// Función de interrupción para el botón de selección
+void IRAM_ATTR handlerSelectButtonISR()
+{
+  portENTER_CRITICAL_ISR(&mux);
+  unsigned long button_time = xTaskGetTickCount();
+  static unsigned long last_button_time = 0;
+
+  if (button_time - last_button_time > 250)
+  {
+    btnSelect.numberKeyPresses++;
+    btnSelect.pressed = true;
+    last_button_time = button_time;
+  }
+  portEXIT_CRITICAL_ISR(&mux);
+}
+
+// Función de interrupción para el botón de ajuste
+void IRAM_ATTR handlerAdjustButtonISR()
+{
+  portENTER_CRITICAL_ISR(&mux);
+  unsigned long button_time = xTaskGetTickCount();
+  static unsigned long last_button_time = 0;
+
+  if (button_time - last_button_time > 250)
+  {
+    btnAdjust.numberKeyPresses++;
+    btnAdjust.pressed = true;
+    last_button_time = button_time;
+  }
+  portEXIT_CRITICAL_ISR(&mux);
+}
+
+void configurarPWM(void);
+void increaseBrightness();
+void loopServo(); // Declaración de la función loopServo
+
+void setup()
+{
+  Serial.begin(115200);
+
+  // Configuración de los pines y los botones
+  pinMode(pinLedR, OUTPUT);
+  pinMode(pinLedG, OUTPUT);
+  pinMode(pinLedB, OUTPUT);
+  pinMode(servoPin, OUTPUT);
+
+  pinMode(btnSelect.PIN, INPUT_PULLUP);
+  pinMode(btnAdjust.PIN, INPUT_PULLUP);
+
+  // Asociación de interrupciones a los botones
+  attachInterrupt(digitalPinToInterrupt(btnSelect.PIN), handlerSelectButtonISR, FALLING);
+  attachInterrupt(digitalPinToInterrupt(btnAdjust.PIN), handlerAdjustButtonISR, FALLING);
+
+  // Configuración del módulo PWM
+  configurarPWM();
+
+  // Configurar el módulo PWM para el servomotor
+  ledcSetup(servoChannel, servoFrequency, resolution);
+  ledcAttachPin(servoPin, servoChannel);
+}
+
+void loop()
+{
+  // Si el botón de selección ha sido presionado
+  if (btnSelect.pressed)
+  {
+    btnSelect.pressed = false;
+    currentColor = (currentColor + 1) % 4;  // Cambiar al siguiente color (R, G, B, PWM)
+  }
+
+  // Si el botón de ajuste ha sido presionado
+  if (btnAdjust.pressed)
+  {
+    btnAdjust.pressed = false;
+    increaseBrightness();  // Aumentar el brillo de los LEDs
+  }
+
+  // Actualizar los LEDs con el color y brillo actual
+  ledcWrite(pwmChannel, brightness);
+  ledcWrite(ledRChannel, (currentColor == ledRChannel) ? brightness : 0);
+  ledcWrite(ledGChannel, (currentColor == ledGChannel) ? brightness : 0);
+  ledcWrite(ledBChannel, (currentColor == ledBChannel) ? brightness : 0);
+
+  loopServo();  // Llamar al ciclo de loop del servomotor
+
+  delay(10);  // Pequeña pausa para evitar flancos rápidos en los botones
+}
+
+// Configuración del módulo PWM
+void configurarPWM(void)
+{
+  ledcSetup(pwmChannel, freqPWM, resolution);
+  ledcSetup(ledRChannel, freqPWM, resolution);
+  ledcSetup(ledGChannel, freqPWM, resolution);
+  ledcSetup(ledBChannel, freqPWM, resolution);
+  ledcSetup(servoChannel, servoFrequency, resolution2);
+
+  ledcAttachPin(pinLedR, ledRChannel);
+  ledcAttachPin(pinLedG, ledGChannel);
+  ledcAttachPin(pinLedB, ledBChannel);
+  ledcAttachPin(servoPin, servoChannel);
+}
+
+// Función para aumentar el brillo de los LEDs
+void increaseBrightness()
+{
+  brightness += 32;  // Incrementar el brillo en un paso
+  if (brightness > 255)
+  {
+    brightness = 0;  // Reiniciar el brillo si llega al máximo
+  }
+}
+
+// Función para el ciclo de control del servomotor
+void loopServo()
+{
+  int servoAngle = 0;
+
+  // Control del servomotor según el color seleccionado
+  if (currentColor == ledRChannel)
+  {
+    servoAngle = 0; // 90 grados
+  }
+  else if (currentColor == ledGChannel)
+  {
+    servoAngle = 90;  // 0 grados
+  }
+  else if (currentColor == ledBChannel)
+  {
+    servoAngle = 180; // 180 grados
+  }
+
+  int dutyCycle = map(servoAngle, 0, 180, 6, 30);  // Mapear el ángulo al ciclo de trabajo PWM
+  ledcWrite(servoChannel, dutyCycle);  // Controlar el servomotor por medio de pulsos PWM
+}
+
+
